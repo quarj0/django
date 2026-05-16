@@ -1,5 +1,6 @@
 import os
 import warnings
+from pathlib import Path
 
 import django
 from django.test import SimpleTestCase
@@ -18,6 +19,10 @@ class DjangoFilePrefixesTests(SimpleTestCase):
     def test_no_file(self):
         orig_file = django.__file__
         try:
+            # Depending on the cwd, Python might give a local checkout
+            # precedence over installed Django, producing None.
+            django.__file__ = None
+            self.assertEqual(django_file_prefixes(), ())
             del django.__file__
             self.assertEqual(django_file_prefixes(), ())
         finally:
@@ -27,7 +32,11 @@ class DjangoFilePrefixesTests(SimpleTestCase):
         prefixes = django_file_prefixes()
         self.assertIsInstance(prefixes, tuple)
         self.assertEqual(len(prefixes), 1)
-        self.assertTrue(prefixes[0].endswith(f"{os.path.sep}django"))
+        self.assertTrue(prefixes[0].endswith(f"{os.path.sep}django{os.path.sep}"))
+
+    def test_does_not_match_packages_prefixed_with_django(self):
+        other_file = Path(django.__file__).parent.parent / "djangoextra" / "__init__.py"
+        self.assertFalse(str(other_file).startswith(django_file_prefixes()))
 
 
 class RenameManagerMethods(RenameMethodsBase):

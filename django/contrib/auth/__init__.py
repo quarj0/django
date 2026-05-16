@@ -1,11 +1,13 @@
-import inspect
 import re
+
+from asgiref.sync import sync_to_async
 
 from django.apps import apps as django_apps
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured, PermissionDenied
 from django.middleware.csrf import rotate_token
 from django.utils.crypto import constant_time_compare
+from django.utils.inspect import signature
 from django.utils.module_loading import import_string
 from django.views.decorators.debug import sensitive_variables
 
@@ -40,7 +42,7 @@ def get_backends():
 
 def _get_compatible_backends(request, **credentials):
     for backend, backend_path in _get_backends(return_tuples=True):
-        backend_signature = inspect.signature(backend.authenticate)
+        backend_signature = signature(backend.authenticate)
         try:
             backend_signature.bind(request, **credentials)
         except TypeError:
@@ -205,6 +207,8 @@ async def alogin(request, user, backend=None):
     await request.session.aset(SESSION_KEY, user._meta.pk.value_to_string(user))
     await request.session.aset(BACKEND_SESSION_KEY, backend)
     await request.session.aset(HASH_SESSION_KEY, session_auth_hash)
+    if hasattr(request, "user"):
+        request.user = user
     if hasattr(request, "auser"):
 
         async def auser():
@@ -244,13 +248,21 @@ async def alogout(request):
             user = None
     await user_logged_out.asend(sender=user.__class__, request=request, user=user)
     await request.session.aflush()
-    if hasattr(request, "auser"):
+
+    has_user = hasattr(request, "user")
+    has_auser = hasattr(request, "auser")
+    if has_user or has_auser:
         from django.contrib.auth.models import AnonymousUser
 
-        async def auser():
-            return AnonymousUser()
+        anon = AnonymousUser()
+        if has_user:
+            request.user = anon
+        if has_auser:
 
-        request.auser = auser
+            async def auser():
+                return anon
+
+            request.auser = auser
 
 
 def get_user_model():
@@ -381,3 +393,22 @@ async def aupdate_session_auth_hash(request, user):
     await request.session.acycle_key()
     if hasattr(user, "get_session_auth_hash") and await request.auser() == user:
         await request.session.aset(HASH_SESSION_KEY, user.get_session_auth_hash())
+
+
+def check_password_with_timing_attack_mitigation(user, password):
+    """
+    Checks password against the user's hash if there is a user, otherwise runs
+    the default password hasher to prevent user enumeration attacks (#20760).
+    """
+    if user is None:
+        get_user_model()().set_password(password)
+    else:
+        return user.check_password(password)
+
+
+async def acheck_password_with_timing_attack_mitigation(user, password):
+    """See check_user_with_timing_attack_mitigation."""
+    if user is None:
+        await sync_to_async(get_user_model()().set_password)(password)
+    else:
+        return await user.acheck_password(password)

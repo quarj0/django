@@ -1,11 +1,14 @@
 import copy
 import datetime
 import json
+import textwrap
 import uuid
 
+from django.conf import USE_BLANK_CHOICE_DASH_DEPRECATED_MSG
 from django.core.exceptions import NON_FIELD_ERRORS
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.validators import MaxValueValidator, RegexValidator
+from django.db.models.utils import get_blank_choice_label
 from django.forms import (
     BooleanField,
     BoundField,
@@ -42,9 +45,10 @@ from django.forms.renderers import DjangoTemplates, get_default_renderer
 from django.forms.utils import ErrorDict, ErrorList
 from django.http import QueryDict
 from django.template import Context, Template
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, ignore_warnings
 from django.test.utils import override_settings
 from django.utils.datastructures import MultiValueDict
+from django.utils.deprecation import RemovedInDjango70Warning
 from django.utils.safestring import mark_safe
 
 from . import jinja2_tests
@@ -795,6 +799,37 @@ aria-describedby="id_birthday_error">
 <option value="P">Python</option>
 <option value="J">Java</option>
 </select>""",
+        )
+
+    # RemovedInDjango70Warning
+    @ignore_warnings(category=RemovedInDjango70Warning)
+    @override_settings(USE_BLANK_CHOICE_DASH=True)
+    def test_blank_choice_dash(self):
+        class SomeForm(Form):
+            somechoices = ChoiceField(
+                choices=(
+                    ("0", get_blank_choice_label()),
+                    ("1", "Test 1"),
+                    ("2", "Test 2"),
+                )
+            )
+
+        f = SomeForm()
+
+        self.assertHTMLEqual(
+            f.as_p(),
+            textwrap.dedent("""
+            <p>
+                <label for="id_somechoices">Somechoices:</label>
+                <select name="somechoices" id="id_somechoices">
+                <option value="0">---------</option>
+                <option value="1">Test 1</option>
+                <option value="2">Test 2</option></select>
+            </p>"""),
+        )
+
+        self.assertWarnsMessage(
+            RemovedInDjango70Warning, USE_BLANK_CHOICE_DASH_DEPRECATED_MSG
         )
 
     def test_forms_with_radio(self):
@@ -1659,6 +1694,13 @@ aria-describedby="id_birthday_error">
 
         with self.assertRaisesMessage(ValueError, "has no field named"):
             f.add_error("missing_field", "Some error.")
+
+        with self.assertRaisesMessage(
+            TypeError,
+            "The argument `field` must be `None` when the `error` argument is a "
+            "dictionary.",
+        ):
+            f.add_error("password1", ValidationError({"password1": "Some error."}))
 
     def test_update_error_dict(self):
         class CodeForm(Form):
@@ -3664,7 +3706,8 @@ Options: <select multiple name="options" aria-invalid="true" required>
         self.assertTrue(f.is_valid())
 
         file1 = SimpleUploadedFile(
-            "我隻氣墊船裝滿晒鱔.txt", "मेरी मँडराने वाली नाव सर्पमीनों से भरी ह".encode()
+            "我隻氣墊船裝滿晒鱔.txt",
+            "मेरी मँडराने वाली नाव सर्पमीनों से भरी ह".encode(),
         )
         f = FileForm(data={}, files={"file1": file1}, auto_id=False)
         self.assertHTMLEqual(
