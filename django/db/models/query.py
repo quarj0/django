@@ -37,8 +37,9 @@ from django.db.models.utils import (
     resolve_callables,
 )
 from django.utils import timezone
-from django.utils.deprecation import RemovedInDjango70Warning, django_file_prefixes
+from django.utils.deprecation import RemovedInDjango70Warning
 from django.utils.functional import cached_property
+from django.utils.warnings import django_file_prefixes
 
 # The maximum number of results to fetch in a get() query.
 MAX_GET_RESULTS = 21
@@ -1703,8 +1704,8 @@ class QuerySet(AltersData):
         # Clear limits and ordering so they can be reapplied
         clone.query.clear_ordering(force=True)
         clone.query.default_ordering = True
+        self._clear_ordering_in_combined_queries(clone.query, other_qs)
         clone.query.clear_limits()
-        clone.query.combined_queries = (self.query, *(qs.query for qs in other_qs))
         clone.query.combinator = combinator
         clone.query.combinator_all = all
         return clone
@@ -2334,6 +2335,14 @@ class QuerySet(AltersData):
                 f"Cannot use QuerySet.{method}() on an unordered queryset performing "
                 f"aggregation. Add an ordering with order_by()."
             )
+
+    def _clear_ordering_in_combined_queries(self, cloned_query, other_qs):
+        combined_queries = [self.query]
+        for qs in other_qs:
+            query = qs.query.clone()
+            query.clear_ordering(force=False, clear_default=False)
+            combined_queries.append(query)
+        cloned_query.combined_queries = tuple(combined_queries)
 
 
 class InstanceCheckMeta(type):
