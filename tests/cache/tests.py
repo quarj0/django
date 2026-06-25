@@ -2387,7 +2387,7 @@ class CacheUtils(SimpleTestCase):
         self.assertEqual(
             get_cache_key(request),
             "views.decorators.cache.cache_page.settingsprefix.GET."
-            "18a03f9c9649f7d684af5db3524f5c99.d41d8cd98f00b204e9800998ecf8427e",
+            "18a03f9c9649f7d684af5db3524f5c99.3b59035bd3b34e30981dc990dd93acbb",
         )
 
     def test_learn_cache_key_strips_whitespace(self):
@@ -2413,6 +2413,25 @@ class CacheUtils(SimpleTestCase):
         self.assertIsNotNone(key_a)
         self.assertIsNotNone(key_b)
         self.assertNotEqual(key_a, key_b)
+
+    def test_learn_cache_key_no_header_collision(self):
+        tests = [
+            ({"X-Region": "EU", "X-Tenant": ""}, {"X-Region": "", "X-Tenant": "EU"}),
+            ({"X-Region": "EU"}, {"X-Tenant": "EU"}),
+        ]
+        for headers_a, headers_b in tests:
+            with self.subTest(headers=(headers_a, headers_b)):
+                request_a = self.factory.get(self.path, headers=headers_a)
+                request_b = self.factory.get(self.path, headers=headers_b)
+                response = HttpResponse()
+                response.headers["Vary"] = "X-Region, X-Tenant"
+                learn_cache_key(request_a, response)
+                # Potentially colliding values result in different cache keys.
+                key_a = get_cache_key(request_a)
+                key_b = get_cache_key(request_b)
+                self.assertIsNotNone(key_a)
+                self.assertIsNotNone(key_b)
+                self.assertNotEqual(key_a, key_b)
 
     def test_patch_cache_control(self):
         tests = (
@@ -2465,6 +2484,17 @@ class CacheUtils(SimpleTestCase):
                 patch_cache_control(response, **newheaders)
                 parts = {cc for cc in response.headers["Cache-Control"].split(", ")}
                 self.assertEqual(parts, expected_cc)
+
+    def test_patch_cache_control_whitespace_around_equals(self):
+        # Whitespace around "=" must not be retained in the directive name;
+        # otherwise no_cache=True fails to collapse the qualified field-list
+        # form (i.e. dictitem() lacks a strip()).
+        for initial_cc in ('no-cache ="Set-Cookie"', 'no-cache = "Set-Cookie"'):
+            with self.subTest(initial_cc=initial_cc):
+                response = HttpResponse(headers={"Cache-Control": initial_cc})
+                patch_cache_control(response, no_cache=True)
+                parts = {cc for cc in response.headers["Cache-Control"].split(", ")}
+                self.assertEqual(parts, {"no-cache"})
 
     def test_has_vary_header(self):
         tests = [
@@ -2604,7 +2634,7 @@ class CacheI18nTest(SimpleTestCase):
         request = self.factory.get(self.path)
         request.META["HTTP_ACCEPT_ENCODING"] = "gzip;q=1.0, identity; q=0.5, *;q=0"
         response = HttpResponse()
-        response.headers["Vary"] = "accept-encoding"
+        response.headers["Vary"] = "cookie, accept-encoding"
         key = learn_cache_key(request, response)
         self.assertIn(
             lang,
@@ -3061,6 +3091,40 @@ class CacheMiddlewareTest(SimpleTestCase):
         response = view(request, "2")
         self.assertEqual(response.content, b"Hello World 1")
 
+    def test_qualified_cache_control_value_not_cached(self):
+        for cc in (
+            'private="Set-Cookie"',
+            'no-cache="Set-Cookie"',
+            'no-store="Set-Cookie"',
+            # Malformed whitespace around "=" still fails safe.
+            'private ="Set-Cookie"',
+            'no-cache = "Set-Cookie"',
+        ):
+            with self.subTest(cache_control=cc):
+
+                @cache_page(3)
+                def view(request, value):
+                    return HttpResponse(
+                        f"Hello World {value}", headers={"Cache-Control": cc}
+                    )
+
+                request = self.factory.get("/view/")
+                response = view(request, "1")
+                self.assertEqual(response.content, b"Hello World 1")
+                response = view(request, "2")
+                self.assertEqual(response.content, b"Hello World 2")
+
+    def test_authorization_header_exception_qualified_public_directive(self):
+        @cache_page(3)
+        def view(request, value):
+            return HttpResponse(
+                f"Hello World {value}", headers={"Cache-Control": 'public="abc"'}
+            )
+
+        request = self.factory.get("/view/", headers={"Authorization": "token"})
+        response = view(request, "1")
+        self.assertIs(has_vary_header(response, "Authorization"), False)
+
     def test_vary_asterisk_not_cached(self):
         views_with_cache = (
             cache_page(3)(hello_world_view_patch_vary_headers_asterisk),
@@ -3297,27 +3361,32 @@ class TestMakeTemplateFragmentKey(SimpleTestCase):
 
     def test_with_one_vary_on(self):
         key = make_template_fragment_key("foo", ["abc"])
-        self.assertEqual(key, "template.cache.foo.493e283d571a73056196f1a68efd0f66")
+        self.assertEqual(key, "template.cache.foo.a6360ec2c58ecc4b23fd5bd00216fccd")
 
     def test_with_many_vary_on(self):
         key = make_template_fragment_key("bar", ["abc", "def"])
-        self.assertEqual(key, "template.cache.bar.17c1a507a0cb58384f4c639067a93520")
+        self.assertEqual(key, "template.cache.bar.250310c146db454966b64f5fc265a540")
 
     def test_proper_escaping(self):
         key = make_template_fragment_key("spam", ["abc:def%"])
-        self.assertEqual(key, "template.cache.spam.06c8ae8e8c430b69fb0a6443504153dc")
+        self.assertEqual(key, "template.cache.spam.bf6c24ef2576004284e0522c15314d8c")
 
     def test_with_ints_vary_on(self):
         key = make_template_fragment_key("foo", [1, 2, 3, 4, 5])
-        self.assertEqual(key, "template.cache.foo.7ae8fd2e0d25d651c683bdeebdb29461")
+        self.assertEqual(key, "template.cache.foo.087c006c1b99e0d147f624b4921f8a13")
 
     def test_with_unicode_vary_on(self):
         key = make_template_fragment_key("foo", ["42º", "😀"])
-        self.assertEqual(key, "template.cache.foo.7ced1c94e543668590ba39b3c08b0237")
+        self.assertEqual(key, "template.cache.foo.ab66482052ab2084b9d25bdd04bc9b10")
 
     def test_long_vary_on(self):
         key = make_template_fragment_key("foo", ["x" * 10000])
-        self.assertEqual(key, "template.cache.foo.3670b349b5124aa56bdb50678b02b23a")
+        self.assertEqual(key, "template.cache.foo.abff8a6702abde497feae7f61de2ef1e")
+
+    def test_collision_vary_on(self):
+        key1 = make_template_fragment_key("foo", ["a:b", "c"])
+        key2 = make_template_fragment_key("foo", ["a", "b:c"])
+        self.assertNotEqual(key1, key2)
 
 
 class CacheHandlerTest(SimpleTestCase):

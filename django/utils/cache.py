@@ -50,7 +50,7 @@ def patch_cache_control(response, **kwargs):
     def dictitem(s):
         t = s.split("=", 1)
         if len(t) > 1:
-            return (t[0].lower(), t[1])
+            return (t[0].strip().lower(), t[1])
         else:
             return (t[0].lower(), True)
 
@@ -356,8 +356,11 @@ def _generate_cache_key(request, method, headerlist, key_prefix):
     ctx = md5(usedforsecurity=False)
     for header in headerlist:
         value = request.META.get(header)
-        if value is not None:
-            ctx.update(value.encode())
+        if value is None:
+            value = ""
+        data = value.encode()
+        # Use the netstring delimiter (with trailing comma).
+        ctx.update(b"%d:%s," % (len(data), data))
     url = md5(request.build_absolute_uri().encode("ascii"), usedforsecurity=False)
     cache_key = "views.decorators.cache.cache_page.%s.%s.%s.%s" % (
         key_prefix,
